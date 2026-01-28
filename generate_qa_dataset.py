@@ -165,7 +165,7 @@ def generate_imbalance(board: chess.Board, fen: str, collector: QACollector, phr
     else:
         scenario = "equal"
 
-    target_per_scenario = collector.target_per_category // 3
+    target_per_scenario = -(-collector.target_per_category // 3)  # ceiling division
 
     if not collector.needs_scenario(cat, scenario, target_per_scenario):
         return
@@ -740,7 +740,7 @@ def generate_position_winrate(
     else:
         scenario = "equal"
 
-    target_per_scenario = collector.target_per_category // 3
+    target_per_scenario = -(-collector.target_per_category // 3)  # ceiling division
     if not collector.needs_scenario(cat, scenario, target_per_scenario):
         return
 
@@ -816,7 +816,7 @@ def generate_move_winrate(
     else:
         scenario = "bad_move"
 
-    target_per_scenario = collector.target_per_category // 3
+    target_per_scenario = -(-collector.target_per_category // 3)  # ceiling division
     if not collector.needs_scenario(cat, scenario, target_per_scenario):
         return
 
