@@ -52,6 +52,44 @@ MOVE_TO_IDX = {move: idx for idx, move in enumerate(policy_index)}
 NUM_VALUE_BINS = 128
 
 
+def describe_position(winrate: float) -> str:
+    """Convert winrate to descriptive term relative to side to move."""
+    if winrate >= 0.90:
+        return "winning"
+    elif winrate >= 0.75:
+        return "much better"
+    elif winrate >= 0.58:
+        return "better"
+    elif winrate >= 0.52:
+        return "slightly better"
+    elif winrate >= 0.48:
+        return "equal"
+    elif winrate >= 0.42:
+        return "slightly worse"
+    elif winrate >= 0.25:
+        return "worse"
+    elif winrate >= 0.10:
+        return "much worse"
+    else:
+        return "losing"
+
+
+def describe_move_quality(regret: float) -> str:
+    """Convert regret (best_winrate - move_winrate) to move quality description."""
+    if regret <= 0.01:
+        return "best"
+    elif regret <= 0.03:
+        return "good"
+    elif regret <= 0.06:
+        return "okay"
+    elif regret <= 0.10:
+        return "inaccuracy"
+    elif regret <= 0.15:
+        return "mistake"
+    else:
+        return "blunder"
+
+
 @dataclass
 class QACollector:
     """Collects Q&A pairs ensuring balanced distribution across categories and scenarios."""
@@ -698,10 +736,10 @@ def generate_best_move(
     a = f"The best move is {move_san}."
     collector.add(cat, fen, q, a)
 
-    # Best move with winrate
-    q = phraser.format_question(cat, "best_move_with_winrate")
-    winrate_pct = round(best_winrate * 100)
-    a = f"The best move is {move_san} with an expected win rate of {winrate_pct}% for {turn_color}."
+    # Best move with position assessment
+    q = phraser.format_question(cat, "best_move_with_eval")
+    position_desc = describe_position(best_winrate)
+    a = f"The best move is {move_san}. After this move, {turn_color} is {position_desc}."
     collector.add(cat, fen, q, a)
 
 
@@ -722,7 +760,6 @@ def generate_position_winrate(
     outputs = model_ctx.get_model_outputs(fen, board)
     winrate = outputs["position_winrate"]
     turn_color = get_color_name(board.turn)
-    other_color = get_color_name(not board.turn)
 
     # Determine scenario for balancing
     if winrate > 0.55:
@@ -736,21 +773,21 @@ def generate_position_winrate(
     if not collector.needs_scenario(cat, scenario, target_per_scenario):
         return
 
-    winrate_pct = round(winrate * 100)
+    position_desc = describe_position(winrate)
 
-    # What is the winrate
-    q = phraser.format_question(cat, "what_is_winrate")
-    a = f"The win rate for {turn_color} is {winrate_pct}%."
+    # How is the position
+    q = phraser.format_question(cat, "how_is_position")
+    a = f"{turn_color.capitalize()} is {position_desc}."
     collector.add(cat, fen, q, a, scenario)
 
     # Who is winning
     q = phraser.format_question(cat, "who_is_winning")
-    if winrate > 0.55:
-        a = f"{turn_color.capitalize()} is winning with a {winrate_pct}% win rate."
-    elif winrate < 0.45:
-        a = f"{other_color.capitalize()} is winning. {turn_color.capitalize()} has only a {winrate_pct}% win rate."
+    if winrate >= 0.52:
+        a = f"{turn_color.capitalize()} is {position_desc}."
+    elif winrate <= 0.48:
+        a = f"{turn_color.capitalize()} is {position_desc}."
     else:
-        a = f"The position is roughly equal. {turn_color.capitalize()} has a {winrate_pct}% win rate."
+        a = "The position is equal."
     collector.add(cat, fen, q, a, scenario)
 
 
@@ -786,16 +823,18 @@ def generate_move_winrate(
 
     move_idx = MOVE_TO_IDX[move_uci]
     move_wr = move_winrates[move_idx].item()
-    move_wr_pct = round(move_wr * 100)
 
     # Convert to SAN
     move_san = board.san(move)
 
-    # Determine if move is good/bad for balancing
-    diff_from_best = best_winrate - move_wr
-    if diff_from_best < 0.02:
+    # Determine move quality based on regret
+    regret = best_winrate - move_wr
+    move_quality = describe_move_quality(regret)
+
+    # Determine scenario for balancing
+    if regret <= 0.03:
         scenario = "good_move"
-    elif diff_from_best < 0.10:
+    elif regret <= 0.10:
         scenario = "okay_move"
     else:
         scenario = "bad_move"
@@ -804,22 +843,26 @@ def generate_move_winrate(
     if not collector.needs_scenario(cat, scenario, target_per_scenario):
         return
 
-    # Winrate after move
-    q = phraser.format_question(cat, "winrate_after_move", move=move_san)
-    a = f"After playing {move_san}, the expected win rate for {turn_color} is {move_wr_pct}%."
+    # Position after move
+    q = phraser.format_question(cat, "eval_after_move", move=move_san)
+    position_after = describe_position(move_wr)
+    a = f"After playing {move_san}, {turn_color} is {position_after}."
     collector.add(cat, fen, q, a, scenario)
 
     # Is move good
     q = phraser.format_question(cat, "is_move_good", move=move_san)
-    best_wr_pct = round(best_winrate * 100)
-    if diff_from_best < 0.02:
-        a = f"Yes, {move_san} is an excellent move with a {move_wr_pct}% win rate, matching the best move."
-    elif diff_from_best < 0.05:
-        a = f"{move_san} is a good move with a {move_wr_pct}% win rate, close to the best move's {best_wr_pct}%."
-    elif diff_from_best < 0.10:
-        a = f"{move_san} is an okay move with a {move_wr_pct}% win rate, but the best move gives {best_wr_pct}%."
+    if move_quality == "best":
+        a = f"{move_san} is the best move."
+    elif move_quality == "good":
+        a = f"{move_san} is a good move."
+    elif move_quality == "okay":
+        a = f"{move_san} is an okay move, but there are better options."
+    elif move_quality == "inaccuracy":
+        a = f"{move_san} is an inaccuracy."
+    elif move_quality == "mistake":
+        a = f"{move_san} is a mistake."
     else:
-        a = f"{move_san} is not a good move. It gives only {move_wr_pct}% win rate compared to the best move's {best_wr_pct}%."
+        a = f"{move_san} is a blunder."
     collector.add(cat, fen, q, a, scenario)
 
 
@@ -904,10 +947,9 @@ def generate_qa_dataset(
     print(f"Loaded {len(source_dataset):,} positions")
 
     print("\nGenerating Q&A pairs...")
-    pbar = tqdm(total=total_examples)
-    last_count = 0
+    pbar = tqdm(source_dataset, desc="Positions: 0 Q&A")
 
-    for example in source_dataset:
+    for example in pbar:
         if collector.is_complete():
             break
 
@@ -933,11 +975,7 @@ def generate_qa_dataset(
                 if collector.total_count() > count_before:
                     break
 
-        current_count = collector.total_count()
-        pbar.update(current_count - last_count)
-        last_count = current_count
-
-    pbar.close()
+        pbar.set_description(f"{collector.total_count():,} Q&A")
 
     print("\nCollection status:")
     for cat_name, info in collector.status().items():
