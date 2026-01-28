@@ -8,6 +8,7 @@ Includes model-based questions for best move, winrate, and move evaluation.
 from __future__ import annotations
 
 import random
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -685,31 +686,22 @@ def generate_best_move(
     best_winrate = outputs["best_move_winrate"]
     turn_color = get_color_name(board.turn)
 
-    # Convert UCI to SAN and describe the move
+    # Convert UCI to SAN
     try:
         move_obj = chess.Move.from_uci(best_move)
         move_san = board.san(move_obj)
-        from_sq = chess.square_name(move_obj.from_square)
-        to_sq = chess.square_name(move_obj.to_square)
-        piece = board.piece_at(move_obj.from_square)
-        if piece:
-            piece_name = get_piece_name(piece.piece_type)
-            move_desc = f"{piece_name} from {from_sq} to {to_sq}"
-        else:
-            move_desc = f"{from_sq} to {to_sq}"
     except Exception:
         move_san = best_move
-        move_desc = best_move
 
     # What is the best move
     q = phraser.format_question(cat, "what_is_best_move")
-    a = f"The best move is {move_san}, {move_desc}."
+    a = f"The best move is {move_san}."
     collector.add(cat, fen, q, a)
 
     # Best move with winrate
     q = phraser.format_question(cat, "best_move_with_winrate")
     winrate_pct = round(best_winrate * 100)
-    a = f"The best move is {move_san}, {move_desc}, with an expected win rate of {winrate_pct}% for {turn_color}."
+    a = f"The best move is {move_san} with an expected win rate of {winrate_pct}% for {turn_color}."
     collector.add(cat, fen, q, a)
 
 
@@ -796,16 +788,8 @@ def generate_move_winrate(
     move_wr = move_winrates[move_idx].item()
     move_wr_pct = round(move_wr * 100)
 
-    # Convert to SAN and describe the move
+    # Convert to SAN
     move_san = board.san(move)
-    from_sq = chess.square_name(move.from_square)
-    to_sq = chess.square_name(move.to_square)
-    piece = board.piece_at(move.from_square)
-    if piece:
-        piece_name = get_piece_name(piece.piece_type)
-        move_desc = f"{piece_name} from {from_sq} to {to_sq}"
-    else:
-        move_desc = f"{from_sq} to {to_sq}"
 
     # Determine if move is good/bad for balancing
     diff_from_best = best_winrate - move_wr
@@ -822,7 +806,7 @@ def generate_move_winrate(
 
     # Winrate after move
     q = phraser.format_question(cat, "winrate_after_move", move=move_san)
-    a = f"After playing {move_san}, {move_desc}, the expected win rate for {turn_color} is {move_wr_pct}%."
+    a = f"After playing {move_san}, the expected win rate for {turn_color} is {move_wr_pct}%."
     collector.add(cat, fen, q, a, scenario)
 
     # Is move good
@@ -966,6 +950,8 @@ def generate_qa_dataset(
 
     qa_dataset = Dataset.from_list(all_qa)
     output_path = Path(output_path)
+    if output_path.exists():
+        shutil.rmtree(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     qa_dataset.save_to_disk(output_path)
     print(f"Saved to {output_path}")
