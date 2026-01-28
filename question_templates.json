@@ -163,38 +163,38 @@
         "variables": []
       },
       {
-        "id": "best_move_with_winrate",
-        "question": "What is the best move and what win percentage do you expect?",
+        "id": "best_move_with_eval",
+        "question": "What is the best move and how does it leave the position?",
         "variables": []
       }
     ]
   },
   "position_winrate": {
-    "description": "Questions about the position's overall winrate (from model winrate head)",
+    "description": "Questions about the position's evaluation (from model winrate head)",
     "templates": [
       {
-        "id": "what_is_winrate",
-        "question": "What is the winrate for the side to move?",
+        "id": "how_is_position",
+        "question": "How is the position for the side to move?",
         "variables": []
       },
       {
         "id": "who_is_winning",
-        "question": "Who is winning this position and by how much?",
+        "question": "Who is winning this position?",
         "variables": []
       }
     ]
   },
   "move_winrate": {
-    "description": "Questions about expected winrate from a specific move (from model policy head)",
+    "description": "Questions about move quality (from model policy head)",
     "templates": [
       {
-        "id": "winrate_after_move",
-        "question": "What win percentage would you expect after playing {move}?",
+        "id": "eval_after_move",
+        "question": "How would the position be after playing {move}?",
         "variables": ["move"]
       },
       {
         "id": "is_move_good",
-        "question": "Is {move} a good move? What winrate does it give?",
+        "question": "Is {move} a good move?",
         "variables": ["move"]
       }
     ]
