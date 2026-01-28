@@ -1,0 +1,202 @@
+{
+  "imbalance": {
+    "description": "Questions about material balance between sides",
+    "templates": [
+      {
+        "id": "material_imbalance",
+        "question": "What is the material imbalance?",
+        "variables": []
+      },
+      {
+        "id": "who_has_more_material",
+        "question": "Which side has more material?",
+        "variables": []
+      },
+      {
+        "id": "count_material",
+        "question": "Count the material for both sides.",
+        "variables": []
+      }
+    ]
+  },
+  "check": {
+    "description": "Questions about check status",
+    "templates": [
+      {
+        "id": "is_in_check",
+        "question": "Is {color} in check? If so, by what piece?",
+        "variables": ["color"]
+      },
+      {
+        "id": "check_status",
+        "question": "Describe the check status of the position.",
+        "variables": []
+      }
+    ]
+  },
+  "attacked_defended": {
+    "description": "Questions about attacked and defended pieces",
+    "templates": [
+      {
+        "id": "piece_safety",
+        "question": "Does the {piece} on {square} have at least as many defenders as attackers? What is attacking or defending it?",
+        "variables": ["piece", "square"]
+      },
+      {
+        "id": "what_attacks_square",
+        "question": "What pieces are attacking {square}?",
+        "variables": ["square"]
+      },
+      {
+        "id": "what_defends_square",
+        "question": "What pieces are defending {square}?",
+        "variables": ["square"]
+      },
+      {
+        "id": "attackers_and_defenders",
+        "question": "List the attackers and defenders of the {piece} on {square}.",
+        "variables": ["piece", "square"]
+      }
+    ]
+  },
+  "hanging": {
+    "description": "Questions about hanging (undefended attacked) pieces",
+    "templates": [
+      {
+        "id": "any_hanging",
+        "question": "Are there any hanging pieces in this position?",
+        "variables": []
+      },
+      {
+        "id": "hanging_for_color",
+        "question": "Does {color} have any hanging pieces?",
+        "variables": ["color"]
+      },
+      {
+        "id": "is_piece_hanging",
+        "question": "Is the {piece} on {square} hanging?",
+        "variables": ["piece", "square"]
+      }
+    ]
+  },
+  "pinned": {
+    "description": "Questions about pinned pieces",
+    "templates": [
+      {
+        "id": "any_pins",
+        "question": "Are there any pinned pieces in this position?",
+        "variables": []
+      },
+      {
+        "id": "pins_for_color",
+        "question": "Does {color} have any pinned pieces?",
+        "variables": ["color"]
+      },
+      {
+        "id": "is_piece_pinned",
+        "question": "Is the {piece} on {square} pinned? If so, by what?",
+        "variables": ["piece", "square"]
+      }
+    ]
+  },
+  "reconstruction": {
+    "description": "Questions about position details (pieces, castling, turn, en passant)",
+    "templates": [
+      {
+        "id": "what_is_on_square",
+        "question": "What is on {square}?",
+        "variables": ["square"]
+      },
+      {
+        "id": "where_is_piece",
+        "question": "Where is {color}'s {piece}?",
+        "variables": ["color", "piece"]
+      },
+      {
+        "id": "whose_turn",
+        "question": "Whose turn is it?",
+        "variables": []
+      },
+      {
+        "id": "castling_rights",
+        "question": "Is castling still available?",
+        "variables": []
+      },
+      {
+        "id": "can_color_castle",
+        "question": "Is castling still available for {color}?",
+        "variables": ["color"]
+      },
+      {
+        "id": "en_passant",
+        "question": "Is en passant available?",
+        "variables": []
+      }
+    ]
+  },
+  "legal_moves": {
+    "description": "Questions about legal moves",
+    "templates": [
+      {
+        "id": "piece_legal_moves",
+        "question": "What moves can the {piece} on {square} make?",
+        "variables": ["piece", "square"]
+      },
+      {
+        "id": "is_move_legal",
+        "question": "Is {move} a legal move? Why or why not?",
+        "variables": ["move"]
+      },
+      {
+        "id": "can_piece_move_to",
+        "question": "Can the {piece} on {from_square} move to {to_square}?",
+        "variables": ["piece", "from_square", "to_square"]
+      }
+    ]
+  },
+  "best_move": {
+    "description": "Questions about the best move in the position (from model policy head)",
+    "templates": [
+      {
+        "id": "what_is_best_move",
+        "question": "What is the best move in this position?",
+        "variables": []
+      },
+      {
+        "id": "best_move_with_winrate",
+        "question": "What is the best move and what win percentage do you expect?",
+        "variables": []
+      }
+    ]
+  },
+  "position_winrate": {
+    "description": "Questions about the position's overall winrate (from model winrate head)",
+    "templates": [
+      {
+        "id": "what_is_winrate",
+        "question": "What is the winrate for the side to move?",
+        "variables": []
+      },
+      {
+        "id": "who_is_winning",
+        "question": "Who is winning this position and by how much?",
+        "variables": []
+      }
+    ]
+  },
+  "move_winrate": {
+    "description": "Questions about expected winrate from a specific move (from model policy head)",
+    "templates": [
+      {
+        "id": "winrate_after_move",
+        "question": "What win percentage would you expect after playing {move}?",
+        "variables": ["move"]
+      },
+      {
+        "id": "is_move_good",
+        "question": "Is {move} a good move? What winrate does it give?",
+        "variables": ["move"]
+      }
+    ]
+  }
+}
