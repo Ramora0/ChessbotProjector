@@ -150,6 +150,29 @@ def main():
         chess_prefix = projector(chess_hidden.to(torch.bfloat16))
         print(f"Chess prefix shape: {chess_prefix.shape}")
 
+        # Print projector output statistics
+        chess_prefix_fp32 = chess_prefix.float()
+        print(
+            "Chess prefix stats: "
+            f"mean={chess_prefix_fp32.mean().item():.6f}, "
+            f"std={chess_prefix_fp32.std().item():.6f}, "
+            f"min={chess_prefix_fp32.min().item():.6f}, "
+            f"max={chess_prefix_fp32.max().item():.6f}, "
+            f"norm={chess_prefix_fp32.norm().item():.6f}"
+        )
+
+        # Compare to Qwen's native embeddings
+        sample_text = "The chess position shows"
+        sample_ids = qwen_tokenizer(sample_text, return_tensors="pt")["input_ids"].to(args.device)
+        sample_embeds = qwen_model.get_input_embeddings()(sample_ids).float()
+        print(
+            "Qwen embed stats:   "
+            f"mean={sample_embeds.mean().item():.6f}, "
+            f"std={sample_embeds.std().item():.6f}, "
+            f"min={sample_embeds.min().item():.6f}, "
+            f"max={sample_embeds.max().item():.6f}"
+        )
+
     # Pre-compute the user prefix embeddings (constant for all questions)
     prefix_text = "<|im_start|>user\n"
     prefix_tokens = qwen_tokenizer(prefix_text, return_tensors="pt", add_special_tokens=False)
