@@ -23,7 +23,7 @@ def generate_random_position(min_moves: int = 5, max_moves: int = 80) -> chess.B
 
 
 def format_position_answer(board: chess.Board) -> str:
-    """Format a chess position as a piece list."""
+    """Format a chess position as a piece list with game state info."""
     piece_locations = {
         'White': {
             'King': [],
@@ -61,6 +61,8 @@ def format_position_answer(board: chess.Board) -> str:
             piece_locations[color][piece_name].append(square_name)
 
     lines = []
+
+    # Piece locations
     for color in ['White', 'Black']:
         for piece_type in ['King', 'Queen', 'Rooks', 'Bishops', 'Knights', 'Pawns']:
             squares = piece_locations[color][piece_type]
@@ -68,13 +70,40 @@ def format_position_answer(board: chess.Board) -> str:
                 squares_str = ', '.join(sorted(squares))
                 lines.append(f"{color} {piece_type}: {squares_str}")
 
+    # Side to move
+    side_to_move = "White" if board.turn == chess.WHITE else "Black"
+    lines.append(f"Side to move: {side_to_move}")
+
+    # Castling rights
+    castling_parts = []
+    if board.has_kingside_castling_rights(chess.WHITE):
+        castling_parts.append("White kingside")
+    if board.has_queenside_castling_rights(chess.WHITE):
+        castling_parts.append("White queenside")
+    if board.has_kingside_castling_rights(chess.BLACK):
+        castling_parts.append("Black kingside")
+    if board.has_queenside_castling_rights(chess.BLACK):
+        castling_parts.append("Black queenside")
+
+    if castling_parts:
+        lines.append(f"Castling rights: {', '.join(castling_parts)}")
+    else:
+        lines.append("Castling rights: None")
+
+    # En passant square
+    if board.ep_square is not None:
+        ep_square_name = chess.square_name(board.ep_square)
+        lines.append(f"En passant square: {ep_square_name}")
+    else:
+        lines.append("En passant square: None")
+
     return '\n'.join(lines)
 
 
 def generate_question(board: chess.Board) -> str:
     """Generate a question asking to reconstruct the position."""
     fen = board.fen()
-    return f"Reconstruct the following chess position. List every piece and where it goes.\n\nFEN: {fen}"
+    return f"Reconstruct the following chess position. List every piece and where it goes, plus the side to move, castling rights, and en passant square.\n\nFEN: {fen}"
 
 
 def generate_example(idx: int) -> dict:

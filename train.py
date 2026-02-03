@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 
@@ -106,6 +107,63 @@ class ChessQADataset(Dataset):
             "suffix_ids": suffix_tokens["input_ids"].squeeze(0),
             "suffix_mask": suffix_tokens["attention_mask"].squeeze(0),
             "answer_start_idx": question_length,  # relative to suffix start
+        }
+
+
+class SimpleChessQADataset(Dataset):
+    """Dataset for simple chess Q&A training from JSON file."""
+
+    def __init__(self, json_path: str, chess_tokenizer, qwen_tokenizer, max_length: int = 512):
+        with open(json_path, 'r') as f:
+            self.examples = json.load(f)
+        self.chess_tokenizer = chess_tokenizer
+        self.qwen_tokenizer = qwen_tokenizer
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __getitem__(self, idx: int) -> dict:
+        example = self.examples[idx]
+        fen = example["fen"]
+        question = example["question"]
+        answer = example["answer"]
+
+        # Process FEN for chess model
+        processed_fen = process_fen(fen)
+        chess_encoding = self.chess_tokenizer.encode(processed_fen)
+        chess_input_ids = torch.tensor(chess_encoding.ids, dtype=torch.long)
+
+        # Create Q&A text for Qwen (chat format with empty thinking block)
+        prefix_text = "<|im_start|>user\n"
+        question_part = f"{question}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
+        answer_part = f"{answer}<|im_end|>"
+
+        # Tokenize prefix (before chess tokens)
+        prefix_tokens = self.qwen_tokenizer(
+            prefix_text, return_tensors="pt", add_special_tokens=False
+        )
+
+        # Tokenize question part to find answer start
+        question_tokens = self.qwen_tokenizer(
+            question_part, return_tensors="pt", add_special_tokens=False
+        )
+        question_length = question_tokens["input_ids"].size(1)
+
+        # Tokenize full suffix (question + answer)
+        suffix_text = question_part + answer_part
+        suffix_tokens = self.qwen_tokenizer(
+            suffix_text, max_length=self.max_length, truncation=True,
+            return_tensors="pt", add_special_tokens=False
+        )
+
+        return {
+            "chess_input_ids": chess_input_ids,
+            "prefix_ids": prefix_tokens["input_ids"].squeeze(0),
+            "prefix_mask": prefix_tokens["attention_mask"].squeeze(0),
+            "suffix_ids": suffix_tokens["input_ids"].squeeze(0),
+            "suffix_mask": suffix_tokens["attention_mask"].squeeze(0),
+            "answer_start_idx": question_length,
         }
 
 
@@ -221,6 +279,12 @@ def main():
         default=4,
         help="Number of Q-Former layers (default: 4)",
     )
+    parser.add_argument(
+        "--simple-dataset",
+        type=str,
+        default=None,
+        help="Path to simple JSON dataset (e.g., position_reconstruction_dataset.json)",
+    )
     args = parser.parse_args()
 
     # Use name for output directory
@@ -289,12 +353,20 @@ def main():
     print(f"Projector parameters: {num_params:,}")
 
     # Create dataset, train/val split, and dataloaders
-    print(f"Loading dataset from {args.dataset_path}...")
-    dataset = ChessQADataset(
-        dataset_path=args.dataset_path,
-        chess_tokenizer=chess_tokenizer,
-        qwen_tokenizer=qwen_tokenizer,
-    )
+    if args.simple_dataset:
+        print(f"Loading simple dataset from {args.simple_dataset}...")
+        dataset = SimpleChessQADataset(
+            json_path=args.simple_dataset,
+            chess_tokenizer=chess_tokenizer,
+            qwen_tokenizer=qwen_tokenizer,
+        )
+    else:
+        print(f"Loading dataset from {args.dataset_path}...")
+        dataset = ChessQADataset(
+            dataset_path=args.dataset_path,
+            chess_tokenizer=chess_tokenizer,
+            qwen_tokenizer=qwen_tokenizer,
+        )
     print(f"Dataset size: {len(dataset):,}")
 
     val_size = max(1, int(0.05 * len(dataset)))
@@ -359,6 +431,7 @@ def main():
         "chess_model_path": args.chess_model_path,
         "qwen_model_name": args.qwen_model_name,
         "architecture": args.architecture,
+        "simple_dataset": args.simple_dataset,
     }
     if args.architecture == "qformer":
         wandb_config["num_query_tokens"] = args.num_query_tokens
