@@ -100,16 +100,15 @@ def format_position_answer(board: chess.Board) -> str:
     return '\n'.join(lines)
 
 
-def generate_question(board: chess.Board) -> str:
+def generate_question() -> str:
     """Generate a question asking to reconstruct the position."""
-    fen = board.fen()
-    return f"Reconstruct the following chess position. List every piece and where it goes, plus the side to move, castling rights, and en passant square.\n\nFEN: {fen}"
+    return "Reconstruct the chess position. List every piece and where it goes, plus the side to move, castling rights, and en passant square."
 
 
 def generate_example(idx: int) -> dict:
     """Generate a single question/answer example."""
     board = generate_random_position()
-    question = generate_question(board)
+    question = generate_question()
     answer = format_position_answer(board)
 
     return {

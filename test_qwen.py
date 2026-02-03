@@ -7,9 +7,12 @@ import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TextStreamer
 
+import json
+
 from model import ChessPolicyValueModel
 from tokenizer import create_tokenizer, process_fen
 from projector import ChessProjector
+from projector_qformer import ChessQFormerProjector
 
 DEFAULT_FEN = "r1bqk2r/ppp2ppp/2p5/2b5/4P1n1/2NP4/PPP1BPPP/R1BQK2R b KQkq - 2 7"
 
@@ -93,6 +96,13 @@ def main():
         action="store_true",
         help="Normalize projector output to match Qwen's average norm (~1.8)",
     )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        choices=["mlp", "qformer", "auto"],
+        default="auto",
+        help="Projector architecture: 'mlp', 'qformer', or 'auto' (detect from config)",
+    )
     args = parser.parse_args()
 
     print(f"Device: {args.device}")
@@ -132,10 +142,26 @@ def main():
 
     # Load projector
     print(f"Loading projector from {args.projector_checkpoint}...")
-    projector = ChessProjector.from_pretrained(
-        args.projector_checkpoint,
-        device=args.device,
-    )
+
+    # Detect architecture from config if auto
+    architecture = args.architecture
+    if architecture == "auto":
+        config_path = f"{args.projector_checkpoint}/config.json"
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        architecture = config.get("architecture", "mlp")
+        print(f"Auto-detected architecture: {architecture}")
+
+    if architecture == "qformer":
+        projector = ChessQFormerProjector.from_pretrained(
+            args.projector_checkpoint,
+            device=args.device,
+        )
+    else:
+        projector = ChessProjector.from_pretrained(
+            args.projector_checkpoint,
+            device=args.device,
+        )
     projector.to(args.device, dtype=dtype)
     projector.eval()
 
