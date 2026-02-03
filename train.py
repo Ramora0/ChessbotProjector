@@ -138,50 +138,68 @@ class ChessQADataset(Dataset):
         chess_encoding = self.chess_tokenizer.encode(processed_fen)
         chess_input_ids = torch.tensor(chess_encoding.ids, dtype=torch.long)
 
-        # Create Q&A text for Qwen
-        question_text = f"Question: {question}\nAnswer:"
-        full_text = f"Question: {question}\nAnswer: {answer}"
+        # Create Q&A text for Qwen (chat format with empty thinking block)
+        # Chess tokens go after "<|im_start|>user\n", before the question
+        prefix_text = "<|im_start|>user\n"
+        question_part = f"{question}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
+        answer_part = f"{answer}<|im_end|>"
 
-        # Tokenize question part to find answer start
+        # Tokenize prefix (before chess tokens)
+        prefix_tokens = self.qwen_tokenizer(
+            prefix_text, return_tensors="pt", add_special_tokens=False
+        )
+        prefix_length = prefix_tokens["input_ids"].size(1)
+
+        # Tokenize question part to find answer start (relative to after chess tokens)
         question_tokens = self.qwen_tokenizer(
-            question_text, return_tensors="pt", add_special_tokens=False
+            question_part, return_tensors="pt", add_special_tokens=False
         )
         question_length = question_tokens["input_ids"].size(1)
 
-        # Tokenize full text
-        full_tokens = self.qwen_tokenizer(
-            full_text, max_length=self.max_length, truncation=True,
+        # Tokenize full suffix (question + answer, after chess tokens)
+        suffix_text = question_part + answer_part
+        suffix_tokens = self.qwen_tokenizer(
+            suffix_text, max_length=self.max_length, truncation=True,
             return_tensors="pt", add_special_tokens=False
         )
 
         return {
             "chess_input_ids": chess_input_ids,
-            "qwen_input_ids": full_tokens["input_ids"].squeeze(0),
-            "qwen_attention_mask": full_tokens["attention_mask"].squeeze(0),
-            "answer_start_idx": question_length,
+            "prefix_ids": prefix_tokens["input_ids"].squeeze(0),
+            "prefix_mask": prefix_tokens["attention_mask"].squeeze(0),
+            "suffix_ids": suffix_tokens["input_ids"].squeeze(0),
+            "suffix_mask": suffix_tokens["attention_mask"].squeeze(0),
+            "answer_start_idx": question_length,  # relative to suffix start
         }
 
 
 def collate_fn(batch: list[dict]) -> dict:
     """Collate function with padding."""
     chess_input_ids = torch.stack([item["chess_input_ids"] for item in batch])
-    max_qwen_len = max(item["qwen_input_ids"].size(0) for item in batch)
 
-    qwen_input_ids = []
-    qwen_attention_mask = []
+    # Prefix is always the same length, no padding needed
+    prefix_ids = torch.stack([item["prefix_ids"] for item in batch])
+    prefix_mask = torch.stack([item["prefix_mask"] for item in batch])
+
+    # Pad suffix
+    max_suffix_len = max(item["suffix_ids"].size(0) for item in batch)
+    suffix_ids = []
+    suffix_mask = []
     answer_start_indices = []
 
     for item in batch:
-        seq_len = item["qwen_input_ids"].size(0)
-        pad_len = max_qwen_len - seq_len
-        qwen_input_ids.append(F.pad(item["qwen_input_ids"], (0, pad_len), value=0))
-        qwen_attention_mask.append(F.pad(item["qwen_attention_mask"], (0, pad_len), value=0))
+        seq_len = item["suffix_ids"].size(0)
+        pad_len = max_suffix_len - seq_len
+        suffix_ids.append(F.pad(item["suffix_ids"], (0, pad_len), value=0))
+        suffix_mask.append(F.pad(item["suffix_mask"], (0, pad_len), value=0))
         answer_start_indices.append(item["answer_start_idx"])
 
     return {
         "chess_input_ids": chess_input_ids,
-        "qwen_input_ids": torch.stack(qwen_input_ids),
-        "qwen_attention_mask": torch.stack(qwen_attention_mask),
+        "prefix_ids": prefix_ids,
+        "prefix_mask": prefix_mask,
+        "suffix_ids": torch.stack(suffix_ids),
+        "suffix_mask": torch.stack(suffix_mask),
         "answer_start_indices": torch.tensor(answer_start_indices, dtype=torch.long),
     }
 
@@ -280,7 +298,7 @@ def main():
         qwen_hidden_size=qwen_hidden_size,
         intermediate_size=INTERMEDIATE_SIZE,
     )
-    projector.to(device)
+    projector.to(device, dtype=torch.bfloat16)
     projector.train()
 
     num_params = sum(p.numel() for p in projector.parameters())
@@ -342,34 +360,44 @@ def main():
                 batch = next(data_iter)
 
             chess_input_ids = batch["chess_input_ids"].to(device)
-            qwen_input_ids = batch["qwen_input_ids"].to(device)
-            qwen_attention_mask = batch["qwen_attention_mask"].to(device)
+            prefix_ids = batch["prefix_ids"].to(device)
+            prefix_mask = batch["prefix_mask"].to(device)
+            suffix_ids = batch["suffix_ids"].to(device)
+            suffix_mask = batch["suffix_mask"].to(device)
             answer_start_indices = batch["answer_start_indices"].to(device)
 
+            # Get embeddings for each part
             chess_hidden = get_chess_hidden_states(chess_model, chess_input_ids)
-            chess_prefix = projector(chess_hidden)
-            qwen_embeds = qwen_model.get_input_embeddings()(qwen_input_ids)
-            combined_embeds = torch.cat([chess_prefix, qwen_embeds], dim=1)
+            chess_embeds = projector(chess_hidden.to(torch.bfloat16))
+            prefix_embeds = qwen_model.get_input_embeddings()(prefix_ids)
+            suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
 
-            prefix_mask = torch.ones(
-                chess_prefix.size(0), chess_prefix.size(1),
-                dtype=qwen_attention_mask.dtype, device=device
+            # Concatenate: [prefix, chess, suffix]
+            combined_embeds = torch.cat([prefix_embeds, chess_embeds, suffix_embeds], dim=1)
+
+            # Build attention mask
+            chess_mask = torch.ones(
+                chess_embeds.size(0), chess_embeds.size(1),
+                dtype=prefix_mask.dtype, device=device
             )
-            combined_attention_mask = torch.cat([prefix_mask, qwen_attention_mask], dim=1)
+            combined_attention_mask = torch.cat([prefix_mask, chess_mask, suffix_mask], dim=1)
 
             outputs = qwen_model(
                 inputs_embeds=combined_embeds, attention_mask=combined_attention_mask
             )
 
-            prefix_len = chess_prefix.size(1)
-            batch_size = qwen_input_ids.size(0)
+            # Build labels: [-100 for prefix, -100 for chess, suffix_ids]
+            batch_size = suffix_ids.size(0)
+            prefix_len = prefix_ids.size(1)
+            chess_len = chess_embeds.size(1)
             labels = torch.full(
                 (batch_size, combined_embeds.size(1)), -100, dtype=torch.long, device=device
             )
-            labels[:, prefix_len:] = qwen_input_ids
+            labels[:, prefix_len + chess_len:] = suffix_ids
 
+            # answer_start_indices is relative to suffix, so offset = prefix_len + chess_len
             loss = compute_loss(
-                outputs.logits, labels, combined_attention_mask, answer_start_indices, prefix_len
+                outputs.logits, labels, combined_attention_mask, answer_start_indices, prefix_len + chess_len
             )
             loss = loss / GRADIENT_ACCUMULATION_STEPS
             loss.backward()

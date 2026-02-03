@@ -145,25 +145,25 @@ def main():
         chess_prefix = projector(chess_hidden)
         print(f"Chess prefix shape: {chess_prefix.shape}")
 
-    # Create question prompt
-    question_prompt = f"Question: {TEST_QUESTION}\nAnswer:"
-    question_tokens = qwen_tokenizer(
-        question_prompt,
-        return_tensors="pt",
-        add_special_tokens=False,
-    )
-    question_input_ids = question_tokens["input_ids"].to(args.device)
+    # Create prompt parts (chess tokens go after "<|im_start|>user\n")
+    prefix_text = "<|im_start|>user\n"
+    suffix_text = f"{TEST_QUESTION}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
 
-    print(f"Question tokens shape: {question_input_ids.shape}")
+    prefix_tokens = qwen_tokenizer(prefix_text, return_tensors="pt", add_special_tokens=False)
+    suffix_tokens = qwen_tokenizer(suffix_text, return_tensors="pt", add_special_tokens=False)
 
-    # Get question embeddings
+    prefix_ids = prefix_tokens["input_ids"].to(args.device)
+    suffix_ids = suffix_tokens["input_ids"].to(args.device)
+
+    print(f"Prefix tokens: {prefix_ids.shape}, Suffix tokens: {suffix_ids.shape}")
+
+    # Get embeddings and concatenate: [prefix, chess, suffix]
     with torch.no_grad():
-        question_embeds = qwen_model.get_input_embeddings()(question_input_ids)
+        prefix_embeds = qwen_model.get_input_embeddings()(prefix_ids)
+        suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
 
-        # Concatenate: [chess_prefix, question_embeds]
-        combined_embeds = torch.cat([chess_prefix, question_embeds], dim=1)
+        combined_embeds = torch.cat([prefix_embeds, chess_prefix, suffix_embeds], dim=1)
 
-        # Create attention mask
         attention_mask = torch.ones(
             combined_embeds.size(0),
             combined_embeds.size(1),
@@ -174,7 +174,8 @@ def main():
         print(f"Combined embeds shape: {combined_embeds.shape}")
         print("\nGenerating response...\n")
 
-        # Generate
+        # Generate (stop at <|im_end|>)
+        im_end_id = qwen_tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
         outputs = qwen_model.generate(
             inputs_embeds=combined_embeds,
             attention_mask=attention_mask,
@@ -183,7 +184,7 @@ def main():
             temperature=0.7,
             top_p=0.9,
             pad_token_id=qwen_tokenizer.pad_token_id,
-            eos_token_id=qwen_tokenizer.eos_token_id,
+            eos_token_id=im_end_id,
         )
 
     # Decode response (skip the input tokens)
