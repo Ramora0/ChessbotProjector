@@ -88,6 +88,11 @@ def main():
         default=DEFAULT_FEN,
         help="FEN position to analyze",
     )
+    parser.add_argument(
+        "--norm-correct",
+        action="store_true",
+        help="Normalize projector output to match Qwen's average norm (~1.8)",
+    )
     args = parser.parse_args()
 
     print(f"Device: {args.device}")
@@ -175,6 +180,13 @@ def main():
             f"max={sample_embeds.max().item():.6f}, "
             f"avg_norm={qwen_avg_norm:.6f}"
         )
+
+        # Optionally normalize projector output to match Qwen's average norm
+        if args.norm_correct:
+            target_norm = 1.8
+            scale_factor = target_norm / chess_avg_norm
+            chess_prefix = chess_prefix * scale_factor
+            print(f"Norm correction: scaled by {scale_factor:.4f} (target avg_norm={target_norm})")
 
     # Pre-compute the user prefix embeddings (constant for all questions)
     prefix_text = "<|im_start|>user\n"
