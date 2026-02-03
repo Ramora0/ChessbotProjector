@@ -152,25 +152,28 @@ def main():
 
         # Print projector output statistics
         chess_prefix_fp32 = chess_prefix.float()
+        chess_avg_norm = chess_prefix_fp32.norm(dim=-1).mean().item()
         print(
             "Chess prefix stats: "
             f"mean={chess_prefix_fp32.mean().item():.6f}, "
             f"std={chess_prefix_fp32.std().item():.6f}, "
             f"min={chess_prefix_fp32.min().item():.6f}, "
             f"max={chess_prefix_fp32.max().item():.6f}, "
-            f"norm={chess_prefix_fp32.norm().item():.6f}"
+            f"avg_norm={chess_avg_norm:.6f}"
         )
 
         # Compare to Qwen's native embeddings
         sample_text = "The chess position shows"
         sample_ids = qwen_tokenizer(sample_text, return_tensors="pt")["input_ids"].to(args.device)
         sample_embeds = qwen_model.get_input_embeddings()(sample_ids).float()
+        qwen_avg_norm = sample_embeds.norm(dim=-1).mean().item()
         print(
             "Qwen embed stats:   "
             f"mean={sample_embeds.mean().item():.6f}, "
             f"std={sample_embeds.std().item():.6f}, "
             f"min={sample_embeds.min().item():.6f}, "
-            f"max={sample_embeds.max().item():.6f}"
+            f"max={sample_embeds.max().item():.6f}, "
+            f"avg_norm={qwen_avg_norm:.6f}"
         )
 
     # Pre-compute the user prefix embeddings (constant for all questions)
