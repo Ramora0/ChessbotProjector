@@ -11,12 +11,7 @@ from model import ChessPolicyValueModel
 from tokenizer import create_tokenizer, process_fen
 from projector import ChessProjector
 
-# ============================================================================
-# EDIT THESE VALUES TO TEST DIFFERENT POSITIONS AND QUESTIONS
-# ============================================================================
-TEST_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
-TEST_QUESTION = "Whose turn is it?"
-# ============================================================================
+DEFAULT_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
 
 
 def get_chess_hidden_states(
@@ -87,11 +82,16 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device to use",
     )
+    parser.add_argument(
+        "--fen",
+        type=str,
+        default=DEFAULT_FEN,
+        help="FEN position to analyze",
+    )
     args = parser.parse_args()
 
     print(f"Device: {args.device}")
-    print(f"\nTest FEN: {TEST_FEN}")
-    print(f"Test Question: {TEST_QUESTION}\n")
+    print(f"\nFEN: {args.fen}\n")
 
     # Load chess model
     print(f"Loading chess model from {args.chess_model_path}...")
@@ -132,7 +132,7 @@ def main():
     chess_tokenizer = create_tokenizer()
 
     # Process FEN
-    processed_fen = process_fen(TEST_FEN)
+    processed_fen = process_fen(args.fen)
     chess_encoding = chess_tokenizer.encode(processed_fen)
     chess_input_ids = torch.tensor(
         [chess_encoding.ids],
@@ -142,98 +142,86 @@ def main():
 
     print(f"Chess input shape: {chess_input_ids.shape}")
 
-    # Get chess hidden states
+    # Get chess hidden states and project to Qwen space (do this once)
     with torch.no_grad():
         chess_hidden = get_chess_hidden_states(chess_model, chess_input_ids)
         print(f"Chess hidden shape: {chess_hidden.shape}")
 
-        # Project to Qwen space
         chess_prefix = projector(chess_hidden.to(torch.bfloat16))
         print(f"Chess prefix shape: {chess_prefix.shape}")
-        chess_prefix_fp32 = chess_prefix.float()
-        print(
-            "Chess prefix stats: "
-            f"mean={chess_prefix_fp32.mean().item():.6f}, "
-            f"std={chess_prefix_fp32.std().item():.6f}, "
-            f"min={chess_prefix_fp32.min().item():.6f}, "
-            f"max={chess_prefix_fp32.max().item():.6f}, "
-            f"norm={chess_prefix_fp32.norm().item():.6f}"
-        )
 
-        # Compare to Qwen's native embeddings
-        sample_text = "The chess position shows"
-        sample_ids = qwen_tokenizer(sample_text, return_tensors="pt")["input_ids"].to(args.device)
-        sample_embeds = qwen_model.get_input_embeddings()(sample_ids).float()
-        print(
-            "Qwen embed stats:   "
-            f"mean={sample_embeds.mean().item():.6f}, "
-            f"std={sample_embeds.std().item():.6f}, "
-            f"min={sample_embeds.min().item():.6f}, "
-            f"max={sample_embeds.max().item():.6f}"
-        )
-
-    # Create prompt parts (chess tokens go after "<|im_start|>user\n")
+    # Pre-compute the user prefix embeddings (constant for all questions)
     prefix_text = "<|im_start|>user\n"
-    suffix_text = f"{TEST_QUESTION}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
-
     prefix_tokens = qwen_tokenizer(prefix_text, return_tensors="pt", add_special_tokens=False)
-    suffix_tokens = qwen_tokenizer(suffix_text, return_tensors="pt", add_special_tokens=False)
-
     prefix_ids = prefix_tokens["input_ids"].to(args.device)
-    suffix_ids = suffix_tokens["input_ids"].to(args.device)
-
-    print(f"Prefix tokens: {prefix_ids.shape}, Suffix tokens: {suffix_ids.shape}")
-
-    # Get embeddings and concatenate: [prefix, chess, suffix]
     with torch.no_grad():
         prefix_embeds = qwen_model.get_input_embeddings()(prefix_ids)
-        suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
 
-        combined_embeds = torch.cat([prefix_embeds, chess_prefix, suffix_embeds], dim=1)
+    # Get the end token ID for generation stopping
+    im_end_id = qwen_tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
 
-        attention_mask = torch.ones(
-            combined_embeds.size(0),
-            combined_embeds.size(1),
-            dtype=torch.long,
-            device=args.device,
-        )
+    print("\nReady! Enter questions about the position (type 'quit' to exit).\n")
+    print("=" * 60)
 
-        print(f"Combined embeds shape: {combined_embeds.shape}")
-        print("\nGenerating response...\n")
+    # Interactive chat loop
+    while True:
+        try:
+            question = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
 
-        # Generate (stop at <|im_end|>)
-        im_end_id = qwen_tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
-        streamer = None
-        if args.stream:
-            streamer = TextStreamer(
-                qwen_tokenizer,
-                skip_prompt=True,
-                skip_special_tokens=True,
+        if not question:
+            continue
+        if question.lower() in ("quit", "exit", "q"):
+            print("Goodbye!")
+            break
+
+        # Build fresh prompt for this question (no history)
+        suffix_text = f"{question}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
+        suffix_tokens = qwen_tokenizer(suffix_text, return_tensors="pt", add_special_tokens=False)
+        suffix_ids = suffix_tokens["input_ids"].to(args.device)
+
+        with torch.no_grad():
+            suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
+
+            # Concatenate: [prefix, chess, suffix]
+            combined_embeds = torch.cat([prefix_embeds, chess_prefix, suffix_embeds], dim=1)
+
+            attention_mask = torch.ones(
+                combined_embeds.size(0),
+                combined_embeds.size(1),
+                dtype=torch.long,
+                device=args.device,
             )
 
-        outputs = qwen_model.generate(
-            inputs_embeds=combined_embeds,
-            attention_mask=attention_mask,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            pad_token_id=qwen_tokenizer.pad_token_id,
-            eos_token_id=im_end_id,
-            streamer=streamer,
-        )
+            print("\nAssistant: ", end="", flush=True)
 
-    # Decode response (skip the input tokens)
-    # Note: outputs includes the input length worth of tokens, then new tokens
-    # But since we used inputs_embeds, the returned token ids start from generation
-    generated_ids = outputs[0]
-    response = qwen_tokenizer.decode(generated_ids, skip_special_tokens=True)
+            streamer = None
+            if args.stream:
+                streamer = TextStreamer(
+                    qwen_tokenizer,
+                    skip_prompt=True,
+                    skip_special_tokens=True,
+                )
 
-    print("=" * 60)
-    print(f"FEN: {TEST_FEN}")
-    print(f"\nQuestion: {TEST_QUESTION}")
-    print(f"\nResponse: {response}")
-    print("=" * 60)
+            outputs = qwen_model.generate(
+                inputs_embeds=combined_embeds,
+                attention_mask=attention_mask,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=qwen_tokenizer.pad_token_id,
+                eos_token_id=im_end_id,
+                streamer=streamer,
+            )
+
+        # If not streaming, print the response
+        if not args.stream:
+            generated_ids = outputs[0]
+            response = qwen_tokenizer.decode(generated_ids, skip_special_tokens=True)
+            print(response)
 
 
 if __name__ == "__main__":
