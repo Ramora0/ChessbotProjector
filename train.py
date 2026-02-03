@@ -303,7 +303,9 @@ def main():
     def lr_lambda(step):
         if step < WARMUP_STEPS:
             return step / max(1, WARMUP_STEPS)
-        return 1.0
+        # Linear decay from 1.0 to 0
+        progress = (step - WARMUP_STEPS) / max(1, max_steps - WARMUP_STEPS)
+        return 1.0 - progress
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
