@@ -191,11 +191,20 @@ def compute_loss(
 
 def main():
     parser = argparse.ArgumentParser(description="Train chess-to-Qwen projector")
+    parser.add_argument("--name", type=str, required=True, help="Run name for checkpoints and wandb")
     parser.add_argument("--chess-model-path", type=str, default="../Chessbot/final-model/checkpoint-515268")
     parser.add_argument("--qwen-model-name", type=str, default="Qwen/Qwen3-8B")
     parser.add_argument("--dataset-path", type=str, default=LOCAL_DATASET)
     parser.add_argument("--output-dir", type=str, default="./projector_checkpoints")
+    parser.add_argument(
+        "--fixed-embeddings",
+        action="store_true",
+        help="Ablation: learn fixed embeddings that ignore chess input (baseline test)",
+    )
     args = parser.parse_args()
+
+    # Use name for output directory
+    output_dir = os.path.join(args.output_dir, args.name)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -227,11 +236,15 @@ def main():
     chess_tokenizer = create_tokenizer()
 
     # Initialize projector (trainable)
-    print("Initializing projector...")
+    if args.fixed_embeddings:
+        print("Initializing FIXED EMBEDDINGS (ablation baseline)...")
+    else:
+        print("Initializing projector...")
     projector = ChessProjector(
         chess_hidden_size=768,
         qwen_hidden_size=qwen_hidden_size,
         intermediate_size=INTERMEDIATE_SIZE,
+        fixed_embeddings=args.fixed_embeddings,
     )
     projector.to(device, dtype=torch.bfloat16)
     projector.train()
@@ -297,6 +310,7 @@ def main():
     # Initialize wandb
     wandb.init(
         project="chessformer-projector",
+        name=args.name,
         config={
             "batch_size": BATCH_SIZE,
             "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
@@ -310,6 +324,7 @@ def main():
             "dataset_size": len(dataset),
             "chess_model_path": args.chess_model_path,
             "qwen_model_name": args.qwen_model_name,
+            "fixed_embeddings": args.fixed_embeddings,
         },
     )
 
@@ -363,7 +378,7 @@ def main():
 
     # Training loop
     print(f"\nStarting training...")
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     global_step = 0
     accumulated_loss = 0.0
@@ -454,13 +469,13 @@ def main():
             print(f"\nEpoch {epoch} validation loss: {val_loss:.4f}")
 
         if global_step % SAVE_STEPS == 0:
-            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+            checkpoint_dir = os.path.join(output_dir, f"checkpoint-{global_step}")
             print(f"\nSaving checkpoint to {checkpoint_dir}...")
             projector.save_pretrained(checkpoint_dir)
 
     pbar.close()
 
-    final_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+    final_dir = os.path.join(output_dir, f"checkpoint-{global_step}")
     print(f"Saving final checkpoint to {final_dir}...")
     projector.save_pretrained(final_dir)
     wandb.finish()
