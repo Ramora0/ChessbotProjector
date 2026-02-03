@@ -37,8 +37,8 @@ from tokenizer import create_tokenizer, process_fen
 # =============================================================================
 # TRAINING CONFIGURATION (optimized for 40GB A100)
 # =============================================================================
-BATCH_SIZE = 32
-GRADIENT_ACCUMULATION_STEPS = 1  # Effective batch size = 32
+BATCH_SIZE = 16
+GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 32
 LEARNING_RATE = 1e-4
 WARMUP_STEPS = 500
 NUM_EPOCHS = 3
