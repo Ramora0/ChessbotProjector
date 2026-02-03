@@ -5,6 +5,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
+
+# =============================================================================
+# Copy dataset to local tmp before training (avoids I/O bottleneck on scratch)
+# =============================================================================
+DATASET_SRC = "/fs/scratch/PAS2836/lees_stuff/easy_chess_questions"
+TMPDIR = os.environ.get("TMPDIR", "/tmp")
+LOCAL_DATASET = os.path.join(TMPDIR, "easy_chess_questions")
+
+if not os.path.exists(LOCAL_DATASET):
+    print(f"Copying dataset to local tmp: {LOCAL_DATASET}")
+    subprocess.run(["cp", "-r", DATASET_SRC, LOCAL_DATASET], check=True)
+    print("Dataset copy complete.")
+else:
+    print(f"Using cached dataset at {LOCAL_DATASET}")
+# =============================================================================
 
 import torch
 import torch.nn as nn
@@ -223,7 +240,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train chess-to-Qwen projector")
     parser.add_argument("--chess-model-path", type=str, required=True)
     parser.add_argument("--qwen-model-name", type=str, default="Qwen/Qwen3-8B")
-    parser.add_argument("--dataset-path", type=str, default="/fs/scratch/PAS2836/lees_stuff/easy_chess_questions")
+    parser.add_argument("--dataset-path", type=str, default=LOCAL_DATASET)
     parser.add_argument("--output-dir", type=str, default="./projector_checkpoints")
     args = parser.parse_args()
 
