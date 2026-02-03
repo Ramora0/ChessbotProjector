@@ -947,12 +947,14 @@ def generate_qa_dataset(
     print(f"Loaded {len(source_dataset):,} positions")
 
     print("\nGenerating Q&A pairs...")
-    pbar = tqdm(source_dataset, desc="Positions: 0 Q&A")
+    pbar = tqdm(total=total_examples, desc="0 positions")
+    positions_seen = 0
 
-    for example in pbar:
+    for example in source_dataset:
         if collector.is_complete():
             break
 
+        positions_seen += 1
         fen = example["fen"]
         try:
             board = chess.Board(fen)
@@ -975,7 +977,11 @@ def generate_qa_dataset(
                 if collector.total_count() > count_before:
                     break
 
-        pbar.set_description(f"{collector.total_count():,} Q&A")
+        new_count = collector.total_count()
+        pbar.update(new_count - pbar.n)
+        pbar.set_description(f"{positions_seen:,} positions")
+
+    pbar.close()
 
     print("\nCollection status:")
     for cat_name, info in collector.status().items():
