@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import shutil
 import subprocess
+
+import wandb
 
 # =============================================================================
 # Copy dataset to local tmp before training (avoids I/O bottleneck on scratch)
@@ -24,14 +24,14 @@ else:
 # =============================================================================
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_from_disk
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from model import ChessPolicyValueModel
+from projector import ChessProjector
 from tokenizer import create_tokenizer, process_fen
 
 # =============================================================================
@@ -48,71 +48,6 @@ LOG_STEPS = 10
 NUM_WORKERS = 4
 MAX_GRAD_NORM = 1.0
 # =============================================================================
-
-
-class ChessProjector(nn.Module):
-    """Projects chess model hidden states to Qwen embedding space using MLPs.
-
-    Architecture (~10M params):
-    - Per-token MLP: 768 -> 2048 -> 4096
-    - All 72 tokens preserved
-    """
-
-    def __init__(
-        self,
-        chess_hidden_size: int = 768,
-        qwen_hidden_size: int = 4096,
-        intermediate_size: int = 2048,
-    ):
-        super().__init__()
-        self.chess_hidden_size = chess_hidden_size
-        self.qwen_hidden_size = qwen_hidden_size
-        self.intermediate_size = intermediate_size
-
-        # MLP: 768 -> 2048 -> 4096 (applied per token)
-        self.mlp = nn.Sequential(
-            nn.LayerNorm(chess_hidden_size),
-            nn.Linear(chess_hidden_size, intermediate_size),
-            nn.GELU(),
-            nn.LayerNorm(intermediate_size),
-            nn.Linear(intermediate_size, qwen_hidden_size),
-            nn.GELU(),
-            nn.LayerNorm(qwen_hidden_size),
-        )
-
-    def forward(self, chess_hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            chess_hidden_states: [batch, 72, 768] from chess model
-
-        Returns:
-            [batch, 72, 4096] prefix embeddings for Qwen
-        """
-        return self.mlp(chess_hidden_states)
-
-    def save_pretrained(self, save_directory: str) -> None:
-        """Save projector weights and config."""
-        os.makedirs(save_directory, exist_ok=True)
-        torch.save(self.state_dict(), os.path.join(save_directory, "projector.pt"))
-        config = {
-            "chess_hidden_size": self.chess_hidden_size,
-            "qwen_hidden_size": self.qwen_hidden_size,
-            "intermediate_size": self.intermediate_size,
-        }
-        with open(os.path.join(save_directory, "config.json"), "w") as f:
-            json.dump(config, f, indent=2)
-
-    @classmethod
-    def from_pretrained(cls, load_directory: str, device: str = "cpu") -> "ChessProjector":
-        """Load projector from saved checkpoint."""
-        with open(os.path.join(load_directory, "config.json"), "r") as f:
-            config = json.load(f)
-        model = cls(**config)
-        state_dict = torch.load(
-            os.path.join(load_directory, "projector.pt"), map_location=device
-        )
-        model.load_state_dict(state_dict)
-        return model
 
 
 class ChessQADataset(Dataset):
@@ -304,7 +239,7 @@ def main():
     num_params = sum(p.numel() for p in projector.parameters())
     print(f"Projector parameters: {num_params:,}")
 
-    # Create dataset and dataloader
+    # Create dataset, train/val split, and dataloaders
     print(f"Loading dataset from {args.dataset_path}...")
     dataset = ChessQADataset(
         dataset_path=args.dataset_path,
@@ -313,8 +248,18 @@ def main():
     )
     print(f"Dataset size: {len(dataset):,}")
 
-    dataloader = DataLoader(
+    val_size = max(1, int(0.05 * len(dataset)))
+    val_size = min(val_size, max(1, len(dataset) - 1))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = random_split(
         dataset,
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42),
+    )
+    print(f"Train size: {len(train_dataset):,} | Val size: {len(val_dataset):,}")
+
+    train_dataloader = DataLoader(
+        train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         collate_fn=collate_fn,
@@ -323,7 +268,17 @@ def main():
         persistent_workers=NUM_WORKERS > 0,
     )
 
-    steps_per_epoch = len(dataloader) // GRADIENT_ACCUMULATION_STEPS
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+        persistent_workers=NUM_WORKERS > 0,
+    )
+
+    steps_per_epoch = max(1, len(train_dataloader) // GRADIENT_ACCUMULATION_STEPS)
     max_steps = NUM_EPOCHS * steps_per_epoch
     print(f"Training for {NUM_EPOCHS} epochs = {max_steps:,} steps")
     print(f"Steps per epoch: {steps_per_epoch:,}")
@@ -339,13 +294,80 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+    # Initialize wandb
+    wandb.init(
+        project="chessformer-projector",
+        config={
+            "batch_size": BATCH_SIZE,
+            "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+            "effective_batch_size": BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS,
+            "learning_rate": LEARNING_RATE,
+            "warmup_steps": WARMUP_STEPS,
+            "num_epochs": NUM_EPOCHS,
+            "intermediate_size": INTERMEDIATE_SIZE,
+            "max_grad_norm": MAX_GRAD_NORM,
+            "projector_params": num_params,
+            "dataset_size": len(dataset),
+            "chess_model_path": args.chess_model_path,
+            "qwen_model_name": args.qwen_model_name,
+        },
+    )
+
+    def evaluate() -> float:
+        projector.eval()
+        total_loss = 0.0
+        total_batches = 0
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                chess_input_ids = batch["chess_input_ids"].to(device)
+                prefix_ids = batch["prefix_ids"].to(device)
+                prefix_mask = batch["prefix_mask"].to(device)
+                suffix_ids = batch["suffix_ids"].to(device)
+                suffix_mask = batch["suffix_mask"].to(device)
+                answer_start_indices = batch["answer_start_indices"].to(device)
+
+                chess_hidden = get_chess_hidden_states(chess_model, chess_input_ids)
+                chess_embeds = projector(chess_hidden.to(torch.bfloat16))
+                prefix_embeds = qwen_model.get_input_embeddings()(prefix_ids)
+                suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
+
+                combined_embeds = torch.cat([prefix_embeds, chess_embeds, suffix_embeds], dim=1)
+
+                chess_mask = torch.ones(
+                    chess_embeds.size(0), chess_embeds.size(1),
+                    dtype=prefix_mask.dtype, device=device
+                )
+                combined_attention_mask = torch.cat([prefix_mask, chess_mask, suffix_mask], dim=1)
+
+                outputs = qwen_model(
+                    inputs_embeds=combined_embeds, attention_mask=combined_attention_mask
+                )
+
+                batch_size = suffix_ids.size(0)
+                prefix_len = prefix_ids.size(1)
+                chess_len = chess_embeds.size(1)
+                labels = torch.full(
+                    (batch_size, combined_embeds.size(1)), -100, dtype=torch.long, device=device
+                )
+                labels[:, prefix_len + chess_len:] = suffix_ids
+
+                loss = compute_loss(
+                    outputs.logits, labels, combined_attention_mask, answer_start_indices, prefix_len + chess_len
+                )
+                total_loss += loss.item()
+                total_batches += 1
+
+        projector.train()
+        return total_loss / max(1, total_batches)
+
     # Training loop
     print(f"\nStarting training...")
     os.makedirs(args.output_dir, exist_ok=True)
 
     global_step = 0
     accumulated_loss = 0.0
-    data_iter = iter(dataloader)
+    data_iter = iter(train_dataloader)
 
     pbar = tqdm(total=max_steps, desc="Training")
 
@@ -356,7 +378,7 @@ def main():
             try:
                 batch = next(data_iter)
             except StopIteration:
-                data_iter = iter(dataloader)
+                data_iter = iter(train_dataloader)
                 batch = next(data_iter)
 
             chess_input_ids = batch["chess_input_ids"].to(device)
@@ -412,9 +434,24 @@ def main():
             avg_loss = accumulated_loss / LOG_STEPS
             current_lr = scheduler.get_last_lr()[0]
             pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
+            wandb.log({
+                "loss": avg_loss,
+                "learning_rate": current_lr,
+                "step": global_step,
+            })
             accumulated_loss = 0.0
 
         pbar.update(1)
+
+        if global_step % steps_per_epoch == 0:
+            epoch = global_step // steps_per_epoch
+            val_loss = evaluate()
+            wandb.log({
+                "val_loss": val_loss,
+                "epoch": epoch,
+                "step": global_step,
+            })
+            print(f"\nEpoch {epoch} validation loss: {val_loss:.4f}")
 
         if global_step % SAVE_STEPS == 0:
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
@@ -426,6 +463,7 @@ def main():
     final_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
     print(f"Saving final checkpoint to {final_dir}...")
     projector.save_pretrained(final_dir)
+    wandb.finish()
     print("Training complete!")
 
 

@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TextStreamer
 
 from model import ChessPolicyValueModel
 from tokenizer import create_tokenizer, process_fen
-from train import ChessProjector
+from projector import ChessProjector
 
 # ============================================================================
 # EDIT THESE VALUES TO TEST DIFFERENT POSITIONS AND QUESTIONS
@@ -72,8 +72,14 @@ def main():
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=128,
+        default=1024,
         help="Maximum new tokens to generate",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        default=True,
+        help="Stream generated tokens to stdout",
     )
     parser.add_argument(
         "--device",
@@ -100,7 +106,7 @@ def main():
         "device_map": args.device,
     }
     if args.use_8bit:
-        qwen_kwargs["load_in_8bit"] = True
+        qwen_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         qwen_kwargs.pop("device_map")
 
     qwen_model = AutoModelForCausalLM.from_pretrained(
@@ -119,7 +125,7 @@ def main():
         args.projector_checkpoint,
         device=args.device,
     )
-    projector.to(args.device)
+    projector.to(args.device, dtype=torch.bfloat16)
     projector.eval()
 
     # Create chess tokenizer
@@ -142,8 +148,17 @@ def main():
         print(f"Chess hidden shape: {chess_hidden.shape}")
 
         # Project to Qwen space
-        chess_prefix = projector(chess_hidden)
+        chess_prefix = projector(chess_hidden.to(torch.bfloat16))
         print(f"Chess prefix shape: {chess_prefix.shape}")
+        chess_prefix_fp32 = chess_prefix.float()
+        print(
+            "Chess prefix stats: "
+            f"mean={chess_prefix_fp32.mean().item():.6f}, "
+            f"std={chess_prefix_fp32.std().item():.6f}, "
+            f"min={chess_prefix_fp32.min().item():.6f}, "
+            f"max={chess_prefix_fp32.max().item():.6f}, "
+            f"norm={chess_prefix_fp32.norm().item():.6f}"
+        )
 
     # Create prompt parts (chess tokens go after "<|im_start|>user\n")
     prefix_text = "<|im_start|>user\n"
@@ -176,6 +191,14 @@ def main():
 
         # Generate (stop at <|im_end|>)
         im_end_id = qwen_tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
+        streamer = None
+        if args.stream:
+            streamer = TextStreamer(
+                qwen_tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+            )
+
         outputs = qwen_model.generate(
             inputs_embeds=combined_embeds,
             attention_mask=attention_mask,
@@ -185,6 +208,7 @@ def main():
             top_p=0.9,
             pad_token_id=qwen_tokenizer.pad_token_id,
             eos_token_id=im_end_id,
+            streamer=streamer,
         )
 
     # Decode response (skip the input tokens)
