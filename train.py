@@ -39,7 +39,7 @@ from tokenizer import create_tokenizer, process_fen
 # =============================================================================
 BATCH_SIZE = 16
 GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 32
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-5
 WARMUP_STEPS = 500
 NUM_EPOCHS = 3
 INTERMEDIATE_SIZE = 2048  # MLP hidden dimension
@@ -246,6 +246,10 @@ def main():
         intermediate_size=INTERMEDIATE_SIZE,
         fixed_embeddings=args.fixed_embeddings,
     )
+    # Initialize output norm to match Qwen's embedding distribution
+    if projector.norm is not None:
+        torch.nn.init.constant_(projector.norm.weight, 0.028)  # gamma → Qwen's std
+        torch.nn.init.constant_(projector.norm.bias, 0.000148)  # beta → Qwen's mean
     projector.to(device, dtype=torch.bfloat16)
     projector.train()
 

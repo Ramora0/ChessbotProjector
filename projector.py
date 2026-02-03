@@ -41,9 +41,9 @@ class ChessProjector(nn.Module):
                 torch.randn(1, num_tokens, qwen_hidden_size) * 0.02
             )
             self.mlp = None
+            self.norm = None
         else:
             # MLP: 768 -> 2048 -> 4096 (applied per token)
-            # No activation/norm after final linear - output must match Qwen's embedding distribution
             self.mlp = nn.Sequential(
                 nn.LayerNorm(chess_hidden_size),
                 nn.Linear(chess_hidden_size, intermediate_size),
@@ -51,6 +51,8 @@ class ChessProjector(nn.Module):
                 nn.LayerNorm(intermediate_size),
                 nn.Linear(intermediate_size, qwen_hidden_size),
             )
+            # Output norm initialized to match Qwen's embedding distribution
+            self.norm = nn.LayerNorm(qwen_hidden_size)
             self.learned_embeddings = None
 
     def forward(self, chess_hidden_states: torch.Tensor) -> torch.Tensor:
@@ -66,7 +68,7 @@ class ChessProjector(nn.Module):
             batch_size = chess_hidden_states.size(0)
             return self.learned_embeddings.expand(batch_size, -1, -1)
         else:
-            return self.mlp(chess_hidden_states)
+            return self.norm(self.mlp(chess_hidden_states))
 
     def save_pretrained(self, save_directory: str) -> None:
         """Save projector weights and config."""
