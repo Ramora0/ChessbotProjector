@@ -191,7 +191,7 @@ def compute_loss(
 
 def main():
     parser = argparse.ArgumentParser(description="Train chess-to-Qwen projector")
-    parser.add_argument("--chess-model-path", type=str, required=True)
+    parser.add_argument("--chess-model-path", type=str, default="../Chessbot/final-model/checkpoint-515268", required=True)
     parser.add_argument("--qwen-model-name", type=str, default="Qwen/Qwen3-8B")
     parser.add_argument("--dataset-path", type=str, default=LOCAL_DATASET)
     parser.add_argument("--output-dir", type=str, default="./projector_checkpoints")
