@@ -15,7 +15,7 @@ from projector import ChessProjector
 # EDIT THESE VALUES TO TEST DIFFERENT POSITIONS AND QUESTIONS
 # ============================================================================
 TEST_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
-TEST_QUESTION = "What is the best move for black?"
+TEST_QUESTION = "Whose turn is it?"
 # ============================================================================
 
 
@@ -158,6 +158,18 @@ def main():
             f"min={chess_prefix_fp32.min().item():.6f}, "
             f"max={chess_prefix_fp32.max().item():.6f}, "
             f"norm={chess_prefix_fp32.norm().item():.6f}"
+        )
+
+        # Compare to Qwen's native embeddings
+        sample_text = "The chess position shows"
+        sample_ids = qwen_tokenizer(sample_text, return_tensors="pt")["input_ids"].to(args.device)
+        sample_embeds = qwen_model.get_input_embeddings()(sample_ids).float()
+        print(
+            "Qwen embed stats:   "
+            f"mean={sample_embeds.mean().item():.6f}, "
+            f"std={sample_embeds.std().item():.6f}, "
+            f"min={sample_embeds.min().item():.6f}, "
+            f"max={sample_embeds.max().item():.6f}"
         )
 
     # Create prompt parts (chess tokens go after "<|im_start|>user\n")

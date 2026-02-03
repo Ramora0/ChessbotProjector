@@ -29,14 +29,13 @@ class ChessProjector(nn.Module):
         self.intermediate_size = intermediate_size
 
         # MLP: 768 -> 2048 -> 4096 (applied per token)
+        # No activation/norm after final linear - output must match Qwen's embedding distribution
         self.mlp = nn.Sequential(
             nn.LayerNorm(chess_hidden_size),
             nn.Linear(chess_hidden_size, intermediate_size),
             nn.GELU(),
             nn.LayerNorm(intermediate_size),
             nn.Linear(intermediate_size, qwen_hidden_size),
-            nn.GELU(),
-            nn.LayerNorm(qwen_hidden_size),
         )
 
     def forward(self, chess_hidden_states: torch.Tensor) -> torch.Tensor:
