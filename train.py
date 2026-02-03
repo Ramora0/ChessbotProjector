@@ -32,6 +32,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from model import ChessPolicyValueModel
 from projector import ChessProjector
+from projector_qformer import ChessQFormerProjector
 from tokenizer import create_tokenizer, process_fen
 
 # =============================================================================
@@ -201,6 +202,25 @@ def main():
         action="store_true",
         help="Ablation: learn fixed embeddings that ignore chess input (baseline test)",
     )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        choices=["mlp", "qformer"],
+        default="mlp",
+        help="Projector architecture: 'mlp' (default) or 'qformer'",
+    )
+    parser.add_argument(
+        "--num-query-tokens",
+        type=int,
+        default=32,
+        help="Number of query tokens for Q-Former (default: 32)",
+    )
+    parser.add_argument(
+        "--qformer-layers",
+        type=int,
+        default=4,
+        help="Number of Q-Former layers (default: 4)",
+    )
     args = parser.parse_args()
 
     # Use name for output directory
@@ -236,20 +256,32 @@ def main():
     chess_tokenizer = create_tokenizer()
 
     # Initialize projector (trainable)
-    if args.fixed_embeddings:
-        print("Initializing FIXED EMBEDDINGS (ablation baseline)...")
+    if args.architecture == "qformer":
+        print(f"Initializing Q-Former projector ({args.num_query_tokens} queries, {args.qformer_layers} layers)...")
+        projector = ChessQFormerProjector(
+            chess_hidden_size=768,
+            qwen_hidden_size=qwen_hidden_size,
+            num_query_tokens=args.num_query_tokens,
+            num_layers=args.qformer_layers,
+        )
+        # Initialize output norm to match Qwen's embedding distribution
+        torch.nn.init.constant_(projector.output_norm.weight, 0.028)
+        torch.nn.init.constant_(projector.output_norm.bias, 0.000148)
     else:
-        print("Initializing projector...")
-    projector = ChessProjector(
-        chess_hidden_size=768,
-        qwen_hidden_size=qwen_hidden_size,
-        intermediate_size=INTERMEDIATE_SIZE,
-        fixed_embeddings=args.fixed_embeddings,
-    )
-    # Initialize output norm to match Qwen's embedding distribution
-    if projector.norm is not None:
-        torch.nn.init.constant_(projector.norm.weight, 0.028)  # gamma → Qwen's std
-        torch.nn.init.constant_(projector.norm.bias, 0.000148)  # beta → Qwen's mean
+        if args.fixed_embeddings:
+            print("Initializing FIXED EMBEDDINGS (ablation baseline)...")
+        else:
+            print("Initializing MLP projector...")
+        projector = ChessProjector(
+            chess_hidden_size=768,
+            qwen_hidden_size=qwen_hidden_size,
+            intermediate_size=INTERMEDIATE_SIZE,
+            fixed_embeddings=args.fixed_embeddings,
+        )
+        # Initialize output norm to match Qwen's embedding distribution
+        if projector.norm is not None:
+            torch.nn.init.constant_(projector.norm.weight, 0.028)  # gamma → Qwen's std
+            torch.nn.init.constant_(projector.norm.bias, 0.000148)  # beta → Qwen's mean
     projector.to(device, dtype=torch.bfloat16)
     projector.train()
 
@@ -314,24 +346,30 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Initialize wandb
+    wandb_config = {
+        "batch_size": BATCH_SIZE,
+        "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+        "effective_batch_size": BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS,
+        "learning_rate": LEARNING_RATE,
+        "warmup_steps": WARMUP_STEPS,
+        "num_epochs": NUM_EPOCHS,
+        "max_grad_norm": MAX_GRAD_NORM,
+        "projector_params": num_params,
+        "dataset_size": len(dataset),
+        "chess_model_path": args.chess_model_path,
+        "qwen_model_name": args.qwen_model_name,
+        "architecture": args.architecture,
+    }
+    if args.architecture == "qformer":
+        wandb_config["num_query_tokens"] = args.num_query_tokens
+        wandb_config["qformer_layers"] = args.qformer_layers
+    else:
+        wandb_config["intermediate_size"] = INTERMEDIATE_SIZE
+        wandb_config["fixed_embeddings"] = args.fixed_embeddings
     wandb.init(
         project="chessformer-projector",
         name=args.name,
-        config={
-            "batch_size": BATCH_SIZE,
-            "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
-            "effective_batch_size": BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS,
-            "learning_rate": LEARNING_RATE,
-            "warmup_steps": WARMUP_STEPS,
-            "num_epochs": NUM_EPOCHS,
-            "intermediate_size": INTERMEDIATE_SIZE,
-            "max_grad_norm": MAX_GRAD_NORM,
-            "projector_params": num_params,
-            "dataset_size": len(dataset),
-            "chess_model_path": args.chess_model_path,
-            "qwen_model_name": args.qwen_model_name,
-            "fixed_embeddings": args.fixed_embeddings,
-        },
+        config=wandb_config,
     )
 
     def evaluate() -> float:
@@ -485,6 +523,80 @@ def main():
     print(f"Saving final checkpoint to {final_dir}...")
     projector.save_pretrained(final_dir)
     wandb.finish()
+
+    # =========================================================================
+    # Run inference on sample questions to show final results
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("SAMPLE INFERENCE RESULTS")
+    print("=" * 70)
+
+    sample_tests = [
+        # Test 1: Position + question from dataset
+        {
+            "desc": "FROM DATASET (seen FEN + seen question type)",
+            "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+            "question": "Whose turn is it?",
+        },
+        # Test 2: New FEN, but question type from training
+        {
+            "desc": "NEW POSITION (novel FEN, trained question type)",
+            "fen": "r2qk2r/ppp2ppp/2np1n2/2b1p1B1/2B1P1b1/2NP1N2/PPP2PPP/R2QK2R w KQkq - 6 7",
+            "question": "What is on c5?",
+        },
+        # Test 3: Novel FEN + novel question (measurable but not in templates)
+        {
+            "desc": "FULLY NOVEL (new FEN + new question type)",
+            "fen": "r1bqr1k1/pppp1ppp/2n2n2/4p3/1bB1P3/2NP1N2/PPP2PPP/R1BQK2R w KQ - 5 6",
+            "question": "How many pawns are on the board?",
+        },
+    ]
+
+    projector.eval()
+    prefix_text = "<|im_start|>user\n"
+    prefix_tokens = qwen_tokenizer(prefix_text, return_tensors="pt", add_special_tokens=False)
+    prefix_ids = prefix_tokens["input_ids"].to(device)
+    im_end_id = qwen_tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
+
+    with torch.no_grad():
+        prefix_embeds = qwen_model.get_input_embeddings()(prefix_ids)
+
+        for test in sample_tests:
+            print(f"\n[{test['desc']}]")
+            print(f"FEN: {test['fen']}")
+
+            processed_fen = process_fen(test["fen"])
+            chess_encoding = chess_tokenizer.encode(processed_fen)
+            chess_input_ids = torch.tensor([chess_encoding.ids], dtype=torch.long, device=device)
+
+            chess_hidden = get_chess_hidden_states(chess_model, chess_input_ids)
+            chess_embeds = projector(chess_hidden.to(torch.bfloat16))
+
+            suffix_text = f"{test['question']}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>"
+            suffix_tokens = qwen_tokenizer(suffix_text, return_tensors="pt", add_special_tokens=False)
+            suffix_ids = suffix_tokens["input_ids"].to(device)
+            suffix_embeds = qwen_model.get_input_embeddings()(suffix_ids)
+
+            combined_embeds = torch.cat([prefix_embeds, chess_embeds, suffix_embeds], dim=1)
+            attention_mask = torch.ones(
+                combined_embeds.size(0), combined_embeds.size(1),
+                dtype=torch.long, device=device
+            )
+
+            outputs = qwen_model.generate(
+                inputs_embeds=combined_embeds,
+                attention_mask=attention_mask,
+                max_new_tokens=128,
+                do_sample=False,
+                pad_token_id=qwen_tokenizer.pad_token_id,
+                eos_token_id=im_end_id,
+            )
+
+            response = qwen_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            print(f"Q: {test['question']}")
+            print(f"A: {response}")
+
+    print("\n" + "=" * 70)
     print("Training complete!")
 
 

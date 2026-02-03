@@ -11,7 +11,7 @@ from model import ChessPolicyValueModel
 from tokenizer import create_tokenizer, process_fen
 from projector import ChessProjector
 
-DEFAULT_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+DEFAULT_FEN = "r1bqk2r/ppp2ppp/2p5/2b5/4P1n1/2NP4/PPP1BPPP/R1BQK2R b KQkq - 2 7"
 
 
 def get_chess_hidden_states(
@@ -79,7 +79,7 @@ def main():
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
+        default="cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu",
         help="Device to use",
     )
     parser.add_argument(
@@ -106,18 +106,24 @@ def main():
 
     # Load Qwen model
     print(f"Loading Qwen model {args.qwen_model_name}...")
+    # MPS doesn't support bfloat16 well, use float16 instead
+    dtype = torch.float16 if args.device == "mps" else torch.bfloat16
     qwen_kwargs = {
-        "torch_dtype": torch.bfloat16,
-        "device_map": args.device,
+        "torch_dtype": dtype,
     }
+    # device_map doesn't work well with MPS
+    if args.device != "mps":
+        qwen_kwargs["device_map"] = args.device
     if args.use_8bit:
         qwen_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-        qwen_kwargs.pop("device_map")
+        qwen_kwargs.pop("device_map", None)
 
     qwen_model = AutoModelForCausalLM.from_pretrained(
         args.qwen_model_name,
         **qwen_kwargs,
     )
+    if args.device == "mps":
+        qwen_model = qwen_model.to(args.device)
     qwen_model.eval()
 
     qwen_tokenizer = AutoTokenizer.from_pretrained(args.qwen_model_name)
@@ -130,7 +136,7 @@ def main():
         args.projector_checkpoint,
         device=args.device,
     )
-    projector.to(args.device, dtype=torch.bfloat16)
+    projector.to(args.device, dtype=dtype)
     projector.eval()
 
     # Create chess tokenizer
@@ -152,7 +158,7 @@ def main():
         chess_hidden = get_chess_hidden_states(chess_model, chess_input_ids)
         print(f"Chess hidden shape: {chess_hidden.shape}")
 
-        chess_prefix = projector(chess_hidden.to(torch.bfloat16))
+        chess_prefix = projector(chess_hidden.to(dtype))
         print(f"Chess prefix shape: {chess_prefix.shape}")
 
         # Print projector output statistics
